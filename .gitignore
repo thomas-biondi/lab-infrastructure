@@ -1,0 +1,14 @@
+# Sauvegardes de configuration
+*.xml
+config-*.bak
+
+# Secrets et matériel cryptographique
+*.key
+*.pem
+*.p12
+.env
+
+# Images système et disques
+*.iso
+*.bz2
+*.vmdk
