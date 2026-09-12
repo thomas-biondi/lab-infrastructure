@@ -26,22 +26,31 @@ Internet
 |---|---|---|
 | 1 | Plan d'adressage et conventions | Terminé |
 | 2 | Pare-feu, routage inter-VLAN, DHCP | Terminé |
-| 3 | Matrice de flux et filtrage | À venir |
-| 4 | Active Directory, DNS, GPO | À venir |
+| 3 | Matrice de flux et filtrage | Terminé |
+| 4 | Active Directory, DNS, GPO | En cours |
 | 5 | Services Linux et automatisation | À venir |
 | 6 | Durcissement et authentification RADIUS | À venir |
 | 7 | Supervision et détection | À venir |
 
-## Organisation du dépôt
+## Documents de référence
 
-| Dossier | Contenu |
+| Document | Objet |
 |---|---|
-| `docs/` | Documents de référence : plan d'adressage, configuration des équipements |
-| `journal/` | Journal de bord par session : décisions, raisonnement, incidents |
+| [`docs/plan-adressage.md`](docs/plan-adressage.md) | Segments, adressage, nomenclature, conventions |
+| [`docs/configuration-fw01.md`](docs/configuration-fw01.md) | État courant du pare-feu : interfaces, DHCP, règles |
+| [`docs/matrice-de-flux.md`](docs/matrice-de-flux.md) | Flux autorisés entre segments et justifications |
+
+## Journal de bord
+
+| Session | Objet |
+|---|---|
+| [01](journal/session-01-plan-adressage.md) | Plan d'adressage et conventions |
+| [02](journal/session-02-pare-feu.md) | Mise en service du pare-feu |
+| [03](journal/session-03-filtrage.md) | Filtrage inter-VLAN |
 
 Les documents de `docs/` décrivent l'état courant de la maquette. Le journal
-conserve la trace des choix et des erreurs, y compris ce qui a été corrigé
-ensuite.
+conserve la trace des choix, des raisonnements et des erreurs, y compris celles
+qui ont été corrigées ensuite.
 
 ## Conventions
 
