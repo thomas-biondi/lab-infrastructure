@@ -8,7 +8,7 @@ L'objectif n'est pas d'empiler des services mais de reproduire les contraintes
 réelles d'un système d'information : segmentation, annuaire centralisé,
 durcissement, supervision, et documentation des décisions de conception.
 
-## Architecture cible
+## Architecture
 
 ```
 Internet
@@ -27,7 +27,7 @@ Internet
 | 1 | Plan d'adressage et conventions | Terminé |
 | 2 | Pare-feu, routage inter-VLAN, DHCP | Terminé |
 | 3 | Matrice de flux et filtrage | Terminé |
-| 4 | Active Directory, DNS, GPO | Client et diagnostic restants |
+| 4 | Active Directory, DNS, GPO, poste client | Terminé |
 | 5 | Services Linux et automatisation | À venir |
 | 6 | Durcissement et authentification RADIUS | À venir |
 | 7 | Supervision et détection | À venir |
@@ -40,6 +40,7 @@ Internet
 | [`docs/matrice-de-flux.md`](docs/matrice-de-flux.md) | Flux autorisés entre segments et justifications |
 | [`docs/configuration-fw01.md`](docs/configuration-fw01.md) | Pare-feu : interfaces, DHCP, règles de filtrage |
 | [`docs/configuration-dc01.md`](docs/configuration-dc01.md) | Contrôleur de domaine : forêt, annuaire, groupes, GPO |
+| [`docs/configuration-pc01.md`](docs/configuration-pc01.md) | Poste client : jonction, stratégies, tests d'isolement |
 
 ## Journal de bord
 
@@ -49,10 +50,11 @@ Internet
 | [02](journal/session-02-pare-feu.md) | Mise en service du pare-feu |
 | [03](journal/session-03-filtrage.md) | Filtrage inter-VLAN |
 | [04](journal/session-04-active-directory.md) | Mise en service de l'annuaire |
+| [05](journal/session-05-poste-client.md) | Poste client et diagnostic de stratégie |
 
 Les documents de `docs/` décrivent l'état courant de la maquette. Le journal
-conserve la trace des choix, des raisonnements et des erreurs, y compris celles
-qui ont été corrigées ensuite.
+conserve la trace des choix, des raisonnements et des incidents, ainsi que la
+méthode de diagnostic employée pour les résoudre.
 
 ## Conventions
 
