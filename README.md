@@ -16,9 +16,12 @@ Internet
  FW01 (OPNsense) ........ routage inter-VLAN, filtrage, DHCP
    |                      authentification des administrateurs par RADIUS
    |
-   +-- VLAN 10 POSTES ... PC01, poste client joint au domaine
+   +-- VLAN 10 POSTES ... PC01, poste joint au domaine
+   |                      administration locale et secrets gérés par l'annuaire
+   |
    +-- VLAN 20 SERVEURS . DC01 (AD DS, DNS, PKI), SRV01 (services, RADIUS),
    |                      SIEM01 (supervision, à venir)
+   |
    +-- VLAN 30 INVITES .. segment isolé, accès Internet uniquement
 ```
 
@@ -31,7 +34,7 @@ Internet
 | 3 | Matrice de flux et filtrage | Terminé |
 | 4 | Active Directory, DNS, GPO, poste client | Terminé |
 | 5 | Services Linux et automatisation | Terminé |
-| 6 | Durcissement et authentification centralisée | RADIUS terminé, durcissement en cours |
+| 6 | Durcissement et authentification centralisée | Terminé |
 | 7 | Supervision et détection | À venir |
 
 ## Documents de référence
@@ -45,6 +48,7 @@ Internet
 | [`docs/configuration-pc01.md`](docs/configuration-pc01.md) | Poste client : jonction, stratégies, tests d'isolement |
 | [`docs/configuration-srv01.md`](docs/configuration-srv01.md) | Serveur Linux : durcissement, pare-feu local, sauvegardes |
 | [`docs/authentification-centralisee.md`](docs/authentification-centralisee.md) | RADIUS, PKI interne, autorisation par groupe |
+| [`docs/durcissement-postes.md`](docs/durcissement-postes.md) | Administration locale et gestion des secrets machines |
 | [`docs/automatisation.md`](docs/automatisation.md) | Scripts en service, choix de conception et limites |
 
 ## Journal de bord
@@ -58,6 +62,7 @@ Internet
 | [05](journal/session-05-poste-client.md) | Poste client et diagnostic de stratégie |
 | [06](journal/session-06-serveur-linux.md) | Serveur Linux et automatisation |
 | [07](journal/session-07-radius.md) | Authentification centralisée |
+| [08](journal/session-08-durcissement-postes.md) | Durcissement des postes |
 
 Les documents de `docs/` décrivent l'état courant de la maquette. Le journal
 conserve la trace des choix, des raisonnements et des incidents, ainsi que la
