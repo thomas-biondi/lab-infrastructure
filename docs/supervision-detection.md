@@ -2,7 +2,8 @@
 
 > Description du dispositif de collecte, des détections en service et de leurs
 > limites connues. Le raisonnement figure dans
-> `journal/session-09-supervision.md`.
+> `journal/session-09-supervision.md` et
+> `journal/session-10-verification-chaine.md`.
 
 ---
 
@@ -60,7 +61,8 @@ alerte sans conduite associée produit un analyste qui la regarde, ne sait
 qu'en faire, et la ferme.
 
 **Collecté sans alerter** : blocages du pare-feu, échecs d'authentification
-individuels, élévations de privilèges, sauvegardes.
+individuels, élévations de privilèges, sauvegardes, messages de fonctionnement
+des services de détection.
 
 ---
 
@@ -69,13 +71,18 @@ individuels, élévations de privilèges, sauvegardes.
 | Composant | Rôle |
 |---|---|
 | `SIEM01`, `10.10.20.30` | Gestionnaire, indexeur et tableau de bord |
-| Agent sur `SRV01` | Journaux système, SSH, élévations, `fail2ban` |
+| Agent sur `SRV01` | Journaux système par journald, SSH, élévations, `fail2ban` |
 | Agent sur `DC01` | Journal de sécurité Windows |
 
 Partitionnement adapté après installation : le schéma par défaut allouait
 l'essentiel de l'espace à `/home`, alors que l'indexation écrit dans `/var`. Le
 volume a été réduit et l'espace transféré, opération rendue possible par le
-choix de LVM.
+choix de LVM. État après opération : 41 Go alloués à `/var`.
+
+`SRV01` fonctionne sans démon syslog classique, conformément au comportement par
+défaut de Debian 13. La collecte système passe par un bloc `journald`. Le
+raccordement de `FW01` en syslog s'appuiera donc sur le gestionnaire lui-même et
+non sur un relais local.
 
 ### Flux ouverts
 
@@ -119,12 +126,25 @@ Chacun échoue silencieusement. L'outil de test de journaux indique lequel.
 
 | Indicateur | Où | Ce qu'il dit |
 |---|---|---|
-| `Analyzing file` | Journal de l'agent | La source est enregistrée, pas qu'elle est lue |
+| `Analyzing file` | Journal de l'agent | La source est enregistrée, **pas** qu'elle est lue |
+| Descripteur de fichier ouvert | `/proc/<pid>/fd` du processus | La source est réellement lue |
 | `Total rules enabled` | Journal du gestionnaire | Nombre de règles chargées, révèle un rejet silencieux |
+| `wazuh-analysisd -t` | Ligne de commande | Refus explicite avant redémarrage |
 | Phases 1 à 3 | Outil de test de journaux | Où s'arrête exactement le traitement |
 
 Une règle référençant un décodeur inexistant est rejetée sans message. Le
-compteur de règles chargées est le seul moyen de s'en apercevoir.
+compteur de règles chargées est le seul moyen de s'en apercevoir. À l'inverse,
+une règle testant un champ statique par la mauvaise balise est refusée avec un
+message explicite. Les deux cas coexistent, ce qui justifie de conserver les
+deux vérifications.
+
+### Le test hors ligne ne prouve pas la production
+
+L'outil de test de journaux vérifie le décodage et la correspondance de règle
+sans faire intervenir l'agent, le transport ni l'indexation. Un résultat correct
+en test est compatible avec une chaîne de production inopérante.
+
+La vérification de bout en bout est décrite en section 11.
 
 ---
 
@@ -152,14 +172,95 @@ n'extrait aucun nom de programme, et aucun décodeur natif ne se sélectionne.
 Cinq champs extraits : identifiant de processus, niveau, prison, action, adresse
 source.
 
-> **Enseignement.** Avec un format non syslog, le `prematch` doit correspondre à
-> un motif structurel présent dans la ligne, indépendant des champs prédécodés.
-> Un `prematch` sur une chaîne littérale échoue lorsque le prédécodeur n'a pas
+### Moteur d'expressions régulières
+
+L'outil n'emploie pas les expressions régulières usuelles mais un moteur réduit,
+qui connaît `\d`, `\w`, `\s`, les alternatives et les groupes de capture. **Les
+crochets y sont des caractères littéraux.**
+
+`[\d+]` désigne donc bien un crochet ouvrant, des chiffres et un crochet
+fermant, et non une classe de caractères comme dans les syntaxes courantes. Le
+décodeur ci-dessus est correct, mais pour une raison différente de celle qui
+avait été documentée initialement.
+
+> **Une syntaxe familière dans un outil inconnu n'est pas la même syntaxe.**
+> Vérifier quel moteur est en jeu avant d'interpréter un motif, y compris
+> lorsqu'il produit le résultat attendu.
+
+### Périmètre réel
+
+| Ligne | Décodage |
+|---|---|
+| `[sshd] Ban 10.10.20.2` | Cinq champs extraits |
+| `[sshd] Flush ticket(s) with nftables` | Parent seul, aucun champ |
+| `banTime: 3600` | Aucun décodeur, ligne non indexée |
+
+Le `prematch` exige un mot entre crochets après le niveau, c'est-à-dire un nom
+de prison. Les lignes de configuration en sont dépourvues et ne sont pas
+collectées.
+
+> Avec un format non syslog, le `prematch` doit correspondre à un motif
+> structurel présent dans la ligne, indépendant des champs prédécodés. Un
+> `prematch` sur une chaîne littérale échoue lorsque le prédécodeur n'a pas
 > identifié de programme.
 
 ---
 
-## 6. Règle de détection personnalisée
+## 6. Règles de détection personnalisées
+
+### 6.1 Actions du service de blocage automatique
+
+Le décodeur parent accepte toute ligne portant un nom de prison, y compris les
+messages de fonctionnement. Une règle unique alertait donc au même niveau pour
+un bannissement et pour un message de service, avec une description aux champs
+vides dans le second cas.
+
+Deux règles, hiérarchisées selon ce qu'on ferait en les recevant :
+
+```xml
+<group name="fail2ban,local,">
+
+  <rule id="100001" level="3">
+    <decoded_as>fail2ban-local</decoded_as>
+    <description>Fail2ban: evenement de service</description>
+  </rule>
+
+  <rule id="100002" level="7">
+    <if_sid>100001</if_sid>
+    <srcip>any</srcip>
+    <description>Fail2ban: $(action) sur le jail $(jail) contre $(srcip)</description>
+  </rule>
+
+</group>
+```
+
+| Règle | Niveau | Portée |
+|---|---|---|
+| 100001 | 3 | Toute ligne décodée, collecte sans alerte |
+| 100002 | 7 | Lignes portant une adresse source, actions de bannissement |
+
+Description produite : `Fail2ban: Ban sur le jail sshd contre 10.10.20.2`.
+
+**Champs statiques et champs dynamiques.** `srcip` est un champ statique,
+interrogé par sa balise propre. Une condition écrite `<field name="srcip">` est
+refusée au chargement. La famille du champ n'est pas déductible de la syntaxe du
+décodeur, où statiques et dynamiques s'écrivent de la même façon dans
+`<order>`.
+
+**Condition portant sur le texte.** Une condition `<match>` posée sur le nom de
+module s'est chargée sans erreur et sans jamais correspondre. La comparaison ne
+porte pas sur la ligne brute telle qu'elle est lue, mais sur ce qui subsiste
+après prédécodage et décodage.
+
+**Classification.** Aucune technique MITRE n'est associée à ces règles. La
+classification `T1110` initialement envisagée désigne l'attaque par force brute,
+alors que la règle signale une réponse défensive automatique.
+
+> Une classification approximative est moins utile qu'une absence de
+> classification. Elle place l'événement dans une catégorie où un analyste ira
+> le chercher pour une autre raison.
+
+### 6.2 Modification de groupe privilégié
 
 La règle native signale les modifications de groupe, sans distinguer les groupes
 sensibles des autres, et avec une description peu exploitable.
@@ -187,6 +288,14 @@ Trois apports par rapport à la règle native :
 > contexte et ne le rendait pas exploitable. C'est précisément le travail
 > d'ingénierie de détection.
 
+### 6.3 Contrôle de chargement
+
+Base sans règles locales : 8451 règles. Avec les trois règles locales : 8454.
+
+Le compteur est la vérification de référence après toute modification. Un écart
+révèle un rejet, y compris silencieux, et signale aussi une suppression
+accidentelle lors d'une édition.
+
 ---
 
 ## 7. Audit Windows
@@ -206,6 +315,11 @@ Sous-catégories activées par stratégie sur les contrôleurs de domaine :
 | Connexion de compte | Authentification Kerberos | Succès et échec | Échecs et leurs codes |
 | Ouverture de session | Ouverture de session | Succès et échec | Connexions et leur type |
 | Accès DS | Accès au service d'annuaire | Succès et échec | Lecture des attributs LAPS |
+
+**La portée de cette stratégie est l'unité d'organisation des contrôleurs de
+domaine.** `PC01` n'en bénéficie pas. Raccorder un agent sur un poste sans
+étendre au préalable la stratégie d'audit aux postes produirait un agent actif
+ne remontant presque rien.
 
 **Arbitrage assumé** : l'accès au service d'annuaire génère un volume important
 lorsqu'il est activé largement. En production, il se restreint aux objets qui
@@ -302,9 +416,14 @@ date, et se révise périodiquement. Les SIEM en exploitation accumulent des
 exclusions posées par des personnes parties depuis, dont plus personne ne
 connaît la raison. C'est un angle mort majeur et rarement audité.
 
+Effet de bord constaté en session 10 : une tentative depuis le poste
+d'administration produit bien une détection, visible dans l'alerte
+`Action détectée (Found)`, mais aucune action de bannissement. La détection
+subsiste, la réponse est suspendue.
+
 ---
 
-## 11. Méthode d'investigation
+## 11. Méthode d'investigation et de vérification
 
 ### La donnée témoin
 
@@ -315,6 +434,27 @@ prouve que cette recherche-là ne les trouve pas.
 rechercher. C'est le seul test qui distingue « les données ne sont pas là » de
 « je cherche mal ».
 
+**Condition de validité** : le témoin doit déclencher une règle connue. Sur un
+dispositif qui n'indexe que ce qui correspond, un témoin arbitraire ne distingue
+pas l'absence de collecte de l'absence de règle. Un témoin injecté par `logger`
+avec une chaîne quelconque ne produit aucun document, sans que cela révèle quoi
+que ce soit sur l'état de la chaîne.
+
+Témoin retenu pour cette infrastructure : une tentative d'authentification SSH
+avec un nom d'utilisateur unique et inexistant, qui déclenche une règle native.
+
+### Vérification d'une chaîne de bout en bout
+
+| Étage | Vérification | Ce qui fait foi |
+|---|---|---|
+| Émission | La source écrit | Descripteur de fichier ouvert en écriture |
+| Collecte | L'agent lit | Descripteur de fichier ouvert en lecture |
+| Transport | L'agent est connecté | Liste des agents côté gestionnaire |
+| Décodage et règle | Correspondance | Outil de test de journaux, phases 1 à 3 |
+| Indexation | Document écrit | Comptage sur l'index avec le témoin |
+
+Le test de journaux seul ne couvre que le quatrième étage.
+
 ### Croiser les critères
 
 Chercher par un champ que tous les événements ne portent pas donne un résultat
@@ -323,6 +463,17 @@ incomplet, sans avertissement.
 Croiser au moins deux critères indépendants et comparer les volumes : par
 adresse source, par agent et groupe de règles, puis dans le texte brut. Une
 divergence révèle un champ manquant.
+
+### Référentiel de temps
+
+Le journal brut issu de journald est exprimé en temps universel, l'horodatage
+d'indexation en heure locale. Deux heures d'écart sur cette maquette, sans aucun
+défaut de synchronisation.
+
+**Fixer explicitement le référentiel employé avant toute reconstitution de
+chronologie.** Une chronologie mélangeant textes bruts et horodatages indexés
+est fausse sans avertissement. Le point devient déterminant dès que plusieurs
+sources sont corrélées.
 
 ### Reconstruire une chronologie
 
@@ -364,15 +515,47 @@ incident.
 
 ---
 
-## 13. Points ouverts
+## 13. Éléments de dimensionnement
 
-`PC01` et `FW01` ne sont pas encore raccordés comme sources.
+Relevé au 17 septembre 2026, à considérer comme un ordre de grandeur et non
+comme un régime de croisière : l'index courant contient les exercices de
+détection des sessions 9 et 10.
+
+| Élément | Valeur |
+|---|---|
+| Espace alloué à `/var` | 41 Go, dont 26 disponibles |
+| Index d'alertes du jour | 2493 documents, 9,6 Mo |
+| Journal d'alertes en fichier | 1,1 Mo |
+| Archives brutes | Désactivées, `logall` et `logall_json` à `no` |
+| Mémoire de la machine | 7,7 Go, dont 1,6 pour l'indexeur et 1,7 pour le gestionnaire |
+
+**Facteur d'amplification.** Une tentative d'authentification SSH sur un compte
+inexistant produit deux alertes, le serveur SSH émettant deux lignes distinctes
+qui correspondent toutes deux à la même règle. Un dimensionnement établi en
+comptant les événements, et non les alertes, sous-estime le stockage.
+
+---
+
+## 14. Points ouverts
+
+`PC01` et `FW01` ne sont pas encore raccordés comme sources. Le raccordement de
+`PC01` suppose au préalable d'étendre la stratégie d'audit à l'unité
+d'organisation des postes.
 
 Les détections 2, 3 et 4 du plan ne sont pas implémentées.
+
+La rétention des index n'est pas configurée. Une politique de purge sera
+nécessaire pour éviter la saturation du volume d'indexation. L'arbitrage sur
+l'activation des archives brutes lui est lié : elles combleraient l'angle mort
+décrit en section 4, au prix d'un volume à borner.
+
+Un bloc de collecte déclaré sur `SIEM01` pointe vers un fichier `fail2ban`
+inexistant sur cette machine, et produit une erreur de lecture à chaque
+démarrage. Son retrait est engagé, à confirmer par l'absence de l'erreur après
+redémarrage.
 
 Le niveau de la règle native sur les connexions par compte au nom générique
 produit un faux positif dont la cause est un nom de compte non nominatif. La
 correction attendue est le renommage du compte, non l'ajustement de la règle.
 
-La rétention des index n'est pas configurée. Une politique de purge sera
-nécessaire pour éviter la saturation du volume d'indexation.
+Les horloges de `DC01` et de `FW01` n'ont pas été vérifiées.
