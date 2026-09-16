@@ -20,7 +20,7 @@ Internet
    |                      administration locale et secrets gérés par l'annuaire
    |
    +-- VLAN 20 SERVEURS . DC01 (AD DS, DNS, PKI), SRV01 (services, RADIUS),
-   |                      SIEM01 (supervision, à venir)
+   |                      SIEM01 (collecte et détection)
    |
    +-- VLAN 30 INVITES .. segment isolé, accès Internet uniquement
 ```
@@ -35,7 +35,7 @@ Internet
 | 4 | Active Directory, DNS, GPO, poste client | Terminé |
 | 5 | Services Linux et automatisation | Terminé |
 | 6 | Durcissement et authentification centralisée | Terminé |
-| 7 | Supervision et détection | À venir |
+| 7 | Supervision et détection | En cours |
 
 ## Documents de référence
 
@@ -49,6 +49,7 @@ Internet
 | [`docs/configuration-srv01.md`](docs/configuration-srv01.md) | Serveur Linux : durcissement, pare-feu local, sauvegardes |
 | [`docs/authentification-centralisee.md`](docs/authentification-centralisee.md) | RADIUS, PKI interne, autorisation par groupe |
 | [`docs/durcissement-postes.md`](docs/durcissement-postes.md) | Administration locale et gestion des secrets machines |
+| [`docs/supervision-detection.md`](docs/supervision-detection.md) | Plan de détection, collecte, règles et méthode d'analyse |
 | [`docs/automatisation.md`](docs/automatisation.md) | Scripts en service, choix de conception et limites |
 
 ## Journal de bord
@@ -63,6 +64,7 @@ Internet
 | [06](journal/session-06-serveur-linux.md) | Serveur Linux et automatisation |
 | [07](journal/session-07-radius.md) | Authentification centralisée |
 | [08](journal/session-08-durcissement-postes.md) | Durcissement des postes |
+| [09](journal/session-09-supervision.md) | Supervision et détection |
 
 Les documents de `docs/` décrivent l'état courant de la maquette. Le journal
 conserve la trace des choix, des raisonnements et des incidents, ainsi que la
