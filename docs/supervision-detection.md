@@ -2,8 +2,9 @@
 
 > Description du dispositif de collecte, des détections en service et de leurs
 > limites connues. Le raisonnement figure dans
-> `journal/session-09-supervision.md` et
-> `journal/session-10-verification-chaine.md`.
+> `journal/session-09-supervision.md`,
+> `journal/session-10-verification-chaine.md` et
+> `journal/session-11-temps-audit-postes.md`.
 
 ---
 
@@ -49,12 +50,12 @@ produit une. L'échec est du bruit, le succès est le signal.
 
 ## 2. Plan de détection
 
-| # | Détection | Source | Motif | Conduite à tenir |
-|---|---|---|---|---|
-| 1 | Modification d'un groupe privilégié | `DC01` | Étape obligée de la plupart des compromissions | Identifier l'auteur, vérifier qu'une demande existe, retirer si non justifié |
-| 2 | Succès après série d'échecs | `SRV01`, `DC01` | Indique qu'un secret a été trouvé | Vérifier l'origine, confirmer avec le titulaire, changer le secret si doute |
-| 3 | Lecture d'un mot de passe LAPS | `DC01` | Doit correspondre à une intervention connue | Rapprocher d'un ticket, forcer la rotation si non justifié |
-| 4 | Refus RADIUS répétés | `SRV01` | Tentative d'accès non autorisé à un équipement | Identifier le compte et la source, vérifier si le compte est compromis |
+| # | Détection | Source | Motif | Conduite à tenir | État |
+|---|---|---|---|---|---|
+| 1 | Modification d'un groupe privilégié | `DC01` | Étape obligée de la plupart des compromissions | Identifier l'auteur, vérifier qu'une demande existe, retirer si non justifié | En service |
+| 2 | Succès après série d'échecs | `SRV01`, `DC01` | Indique qu'un secret a été trouvé | Vérifier l'origine, confirmer avec le titulaire, changer le secret si doute | À faire |
+| 3 | Lecture d'un mot de passe LAPS | `DC01` | Doit correspondre à une intervention connue | Rapprocher d'un ticket, forcer la rotation si non justifié | Audit posé, règle à écrire |
+| 4 | Refus RADIUS répétés | `SRV01` | Tentative d'accès non autorisé à un équipement | Identifier le compte et la source, vérifier si le compte est compromis | À faire |
 
 La colonne « conduite à tenir » est celle que l'on omet le plus souvent. Une
 alerte sans conduite associée produit un analyste qui la regarde, ne sait
@@ -62,27 +63,31 @@ qu'en faire, et la ferme.
 
 **Collecté sans alerter** : blocages du pare-feu, échecs d'authentification
 individuels, élévations de privilèges, sauvegardes, messages de fonctionnement
-des services de détection.
+des services de détection, créations de processus sur les postes.
 
 ---
 
 ## 3. Architecture
 
-| Composant | Rôle |
-|---|---|
-| `SIEM01`, `10.10.20.30` | Gestionnaire, indexeur et tableau de bord |
-| Agent sur `SRV01` | Journaux système par journald, SSH, élévations, `fail2ban` |
-| Agent sur `DC01` | Journal de sécurité Windows |
+| Composant | Rôle | État |
+|---|---|---|
+| `SIEM01`, `10.10.20.30` | Gestionnaire, indexeur et tableau de bord | En service |
+| Agent sur `SRV01` | Journaux système par journald, SSH, élévations, `fail2ban` | En service |
+| Agent sur `DC01` | Journal de sécurité Windows | En service |
+| Agent sur `PC01` | Journal de sécurité Windows, créations de processus | En service |
+| Syslog depuis `FW01` | Journal de filtrage, refus | Reçu et décodable, sans remontée en production |
 
-Partitionnement adapté après installation : le schéma par défaut allouait
-l'essentiel de l'espace à `/home`, alors que l'indexation écrit dans `/var`. Le
-volume a été réduit et l'espace transféré, opération rendue possible par le
-choix de LVM. État après opération : 41 Go alloués à `/var`.
+`FW01` n'admet pas d'agent, son système n'étant pas couvert. La collecte passe
+par syslog, restreinte à l'application de journalisation du filtrage pour ne pas
+transmettre l'ensemble du journal système du pare-feu.
+
+Le gestionnaire n'écoute pas en syslog par défaut. Une connexion dédiée est
+déclarée, avec restriction explicite de l'adresse source émettrice. Sans cette
+restriction, toute machine du réseau pourrait injecter des événements
+arbitraires.
 
 `SRV01` fonctionne sans démon syslog classique, conformément au comportement par
-défaut de Debian 13. La collecte système passe par un bloc `journald`. Le
-raccordement de `FW01` en syslog s'appuiera donc sur le gestionnaire lui-même et
-non sur un relais local.
+défaut de Debian 13. La collecte système passe par un bloc `journald`.
 
 ### Flux ouverts
 
@@ -97,7 +102,51 @@ agents. Les deux sont nécessaires.
 
 ---
 
-## 4. Fonctionnement de l'outil, points structurants
+## 4. Référence de temps
+
+Une corrélation entre sources n'a de sens que si toutes partagent la même
+référence de temps. C'est un prérequis de supervision, pas un réglage annexe.
+
+```
+pool NTP public
+   └─ FW01 ................ 10.10.20.1, seule sortie NTP
+        └─ DC01 ........... 10.10.20.10, émulateur PDC, référence du domaine
+             ├─ SRV01
+             ├─ SIEM01
+             └─ PC01 ....... par la hiérarchie du domaine
+```
+
+Structure identique à celle du DNS : un seul point de sortie, une seule
+référence interne. Le trafic des serveurs Linux vers `DC01` reste à l'intérieur
+de VLAN 20 et ne nécessite aucune règle de filtrage.
+
+**Point de vigilance sur un domaine Active Directory.** Le détenteur du rôle
+d'émulateur de contrôleur principal est le sommet de la hiérarchie de temps de
+la forêt. Sa configuration par défaut après promotion le fait pointer vers cette
+même hiérarchie, c'est-à-dire vers lui-même, ce qui le laisse sur son horloge
+matérielle. L'ensemble du domaine dérive alors de façon cohérente, et l'écart ne
+se manifeste qu'au contact d'une source externe.
+
+| Indicateur | Ce qu'il dit |
+|---|---|
+| Source affichée | `Local CMOS Clock` signale une horloge non référencée |
+| Délai de racine | Nul signifie que la machine se déclare référence ultime |
+| `System clock synchronized` | Rémanent, reste vrai après une synchronisation passée |
+| Contenu du message NTP | Compteur de paquets, horodatages, référence. C'est le fait |
+
+### Référentiels dans les journaux
+
+Le journal brut issu de journald est exprimé en temps universel, l'horodatage
+d'indexation en heure locale. Deux heures d'écart sur cette maquette, sans aucun
+défaut de synchronisation.
+
+**Fixer explicitement le référentiel employé avant toute reconstitution de
+chronologie.** Une chronologie mélangeant textes bruts et horodatages indexés
+est fausse sans avertissement.
+
+---
+
+## 5. Fonctionnement de l'outil, points structurants
 
 ### L'indexation est conditionnée par les règles
 
@@ -131,6 +180,7 @@ Chacun échoue silencieusement. L'outil de test de journaux indique lequel.
 | `Total rules enabled` | Journal du gestionnaire | Nombre de règles chargées, révèle un rejet silencieux |
 | `wazuh-analysisd -t` | Ligne de commande | Refus explicite avant redémarrage |
 | Phases 1 à 3 | Outil de test de journaux | Où s'arrête exactement le traitement |
+| Agent actif côté gestionnaire | Liste des agents | La connexion est établie, pas seulement le service démarré |
 
 Une règle référençant un décodeur inexistant est rejetée sans message. Le
 compteur de règles chargées est le seul moyen de s'en apercevoir. À l'inverse,
@@ -140,15 +190,16 @@ deux vérifications.
 
 ### Le test hors ligne ne prouve pas la production
 
-L'outil de test de journaux vérifie le décodage et la correspondance de règle
-sans faire intervenir l'agent, le transport ni l'indexation. Un résultat correct
-en test est compatible avec une chaîne de production inopérante.
+L'outil de test de journaux charge les règles pour son propre compte et ne fait
+intervenir ni l'agent, ni le transport, ni la file d'analyse, ni l'indexation.
+Un résultat correct en test est compatible avec une chaîne inopérante.
 
-La vérification de bout en bout est décrite en section 11.
+Cas constaté : un événement de filtrage du pare-feu produit une alerte de niveau
+5 en test et aucune en production.
 
 ---
 
-## 5. Décodeur personnalisé
+## 6. Décodeur personnalisé
 
 `fail2ban` écrit dans un format qui n'est pas du syslog : horodatage ISO avec
 millisecondes, nom de module pointé, absence de nom d'hôte. Le prédécodage
@@ -169,19 +220,11 @@ n'extrait aucun nom de programme, et aucun décodeur natif ne se sélectionne.
 </decoder>
 ```
 
-Cinq champs extraits : identifiant de processus, niveau, prison, action, adresse
-source.
-
 ### Moteur d'expressions régulières
 
 L'outil n'emploie pas les expressions régulières usuelles mais un moteur réduit,
 qui connaît `\d`, `\w`, `\s`, les alternatives et les groupes de capture. **Les
 crochets y sont des caractères littéraux.**
-
-`[\d+]` désigne donc bien un crochet ouvrant, des chiffres et un crochet
-fermant, et non une classe de caractères comme dans les syntaxes courantes. Le
-décodeur ci-dessus est correct, mais pour une raison différente de celle qui
-avait été documentée initialement.
 
 > **Une syntaxe familière dans un outil inconnu n'est pas la même syntaxe.**
 > Vérifier quel moteur est en jeu avant d'interpréter un motif, y compris
@@ -199,23 +242,21 @@ Le `prematch` exige un mot entre crochets après le niveau, c'est-à-dire un nom
 de prison. Les lignes de configuration en sont dépourvues et ne sont pas
 collectées.
 
-> Avec un format non syslog, le `prematch` doit correspondre à un motif
-> structurel présent dans la ligne, indépendant des champs prédécodés. Un
-> `prematch` sur une chaîne littérale échoue lorsque le prédécodeur n'a pas
-> identifié de programme.
+### Décodeur du pare-feu
+
+Le format de journal de filtrage émis en syslog BSD historique est reconnu
+nativement par le décodeur `pf`, qui extrait l'action, la direction, les
+adresses, les ports, le protocole et l'identifiant de règle. Aucun décodeur
+personnalisé n'est nécessaire.
+
+Le format normalisé récent n'est pas reconnu par ce décodeur. Le choix du format
+d'émission conditionne donc le décodage.
 
 ---
 
-## 6. Règles de détection personnalisées
+## 7. Règles de détection personnalisées
 
-### 6.1 Actions du service de blocage automatique
-
-Le décodeur parent accepte toute ligne portant un nom de prison, y compris les
-messages de fonctionnement. Une règle unique alertait donc au même niveau pour
-un bannissement et pour un message de service, avec une description aux champs
-vides dans le second cas.
-
-Deux règles, hiérarchisées selon ce qu'on ferait en les recevant :
+### 7.1 Actions du service de blocage automatique
 
 ```xml
 <group name="fail2ban,local,">
@@ -239,31 +280,17 @@ Deux règles, hiérarchisées selon ce qu'on ferait en les recevant :
 | 100001 | 3 | Toute ligne décodée, collecte sans alerte |
 | 100002 | 7 | Lignes portant une adresse source, actions de bannissement |
 
-Description produite : `Fail2ban: Ban sur le jail sshd contre 10.10.20.2`.
-
 **Champs statiques et champs dynamiques.** `srcip` est un champ statique,
 interrogé par sa balise propre. Une condition écrite `<field name="srcip">` est
 refusée au chargement. La famille du champ n'est pas déductible de la syntaxe du
-décodeur, où statiques et dynamiques s'écrivent de la même façon dans
-`<order>`.
+décodeur.
 
 **Condition portant sur le texte.** Une condition `<match>` posée sur le nom de
 module s'est chargée sans erreur et sans jamais correspondre. La comparaison ne
 porte pas sur la ligne brute telle qu'elle est lue, mais sur ce qui subsiste
 après prédécodage et décodage.
 
-**Classification.** Aucune technique MITRE n'est associée à ces règles. La
-classification `T1110` initialement envisagée désigne l'attaque par force brute,
-alors que la règle signale une réponse défensive automatique.
-
-> Une classification approximative est moins utile qu'une absence de
-> classification. Elle place l'événement dans une catégorie où un analyste ira
-> le chercher pour une autre raison.
-
-### 6.2 Modification de groupe privilégié
-
-La règle native signale les modifications de groupe, sans distinguer les groupes
-sensibles des autres, et avec une description peu exploitable.
+### 7.2 Modification de groupe privilégié
 
 ```xml
 <rule id="100200" level="12">
@@ -275,36 +302,25 @@ sensibles des autres, et avec une description peu exploitable.
 </rule>
 ```
 
-Trois apports par rapport à la règle native :
+Trois apports par rapport à la règle native : hiérarchisation restreinte aux
+groupes sensibles de cette infrastructure, description nommant le groupe et
+l'auteur, classification corrigée.
 
-- **Hiérarchisation** : niveau 12 et notification, uniquement pour les groupes
-  sensibles de cette infrastructure
-- **Lisibilité** : la description nomme le groupe et l'auteur, exploitable dans
-  une liste d'alertes sans ouvrir l'événement
-- **Classification** : `T1098` Account Manipulation, plus juste que `T1484` pour
-  ce cas
+### 7.3 Contrôle de chargement
 
-> La règle générique voyait l'événement mais ne le hiérarchisait pas selon le
-> contexte et ne le rendait pas exploitable. C'est précisément le travail
-> d'ingénierie de détection.
-
-### 6.3 Contrôle de chargement
-
-Base sans règles locales : 8451 règles. Avec les trois règles locales : 8454.
-
-Le compteur est la vérification de référence après toute modification. Un écart
-révèle un rejet, y compris silencieux, et signale aussi une suppression
-accidentelle lors d'une édition.
+Base sans règles locales : 8451 règles. Le compteur est la vérification de
+référence après toute modification. Un écart révèle un rejet, y compris
+silencieux, et signale aussi une suppression accidentelle lors d'une édition.
 
 ---
 
-## 7. Audit Windows
+## 8. Audit Windows
 
 **Windows ne journalise pas par défaut ce qu'il faut détecter.** Le canal de
 sécurité se remplit, ce qui donne l'illusion d'une couverture, mais les
 événements déterminants exigent l'activation explicite de l'audit.
 
-Sous-catégories activées par stratégie sur les contrôleurs de domaine :
+### 8.1 Contrôleurs de domaine
 
 | Catégorie | Sous-catégorie | Réglage | Objet |
 |---|---|---|---|
@@ -316,17 +332,66 @@ Sous-catégories activées par stratégie sur les contrôleurs de domaine :
 | Ouverture de session | Ouverture de session | Succès et échec | Connexions et leur type |
 | Accès DS | Accès au service d'annuaire | Succès et échec | Lecture des attributs LAPS |
 
-**La portée de cette stratégie est l'unité d'organisation des contrôleurs de
-domaine.** `PC01` n'en bénéficie pas. Raccorder un agent sur un poste sans
-étendre au préalable la stratégie d'audit aux postes produirait un agent actif
-ne remontant presque rien.
+**Écart de mise en œuvre connu** : ces réglages sont portés par la stratégie par
+défaut du domaine et non par un objet dédié, donc appliqués à toutes les
+machines. Les sous-catégories propres aux contrôleurs de domaine sont ainsi
+actives sur les postes, où elles produisent du volume sans objet. Correction
+prévue.
 
-**Arbitrage assumé** : l'accès au service d'annuaire génère un volume important
-lorsqu'il est activé largement. En production, il se restreint aux objets qui
-comptent par des listes d'audit sur les unités d'organisation. Chaque audit
-activé coûte du volume et des performances : on active ce qu'on sait exploiter.
+> Modifier une stratégie par défaut plutôt que créer un objet dédié empêche de
+> distinguer ce qui a été configuré de ce qui était livré, et rend la portée
+> impossible à restreindre. Le moindre privilège s'applique aussi à la
+> journalisation.
 
-### Identifiants d'événements à connaître
+### 8.2 Postes de travail
+
+Objet dédié `GPO_Postes_Audit`, lié à l'unité d'organisation des postes,
+distinct de l'objet de durcissement. Audit et durcissement ont des cycles de vie
+différents et doivent pouvoir être désactivés séparément.
+
+| Catégorie | Sous-catégorie | Réglage | Objet |
+|---|---|---|---|
+| Ouverture/fermeture de session | Ouvrir la session | Succès et échec | Connexions et leur type |
+| Ouverture/fermeture de session | Ouverture de session spéciale | Succès | Sessions à privilèges |
+| Suivi détaillé | Créer un processus | Succès | Exécution sur le poste |
+| Gestion des comptes | Groupes de sécurité | Succès et échec | Administrateurs locaux |
+| Gestion des comptes | Comptes d'utilisateur | Succès et échec | Création de compte local |
+| Accès aux objets | Partage de fichiers | Échec | Accès refusés |
+
+Un poste n'a pas les mêmes événements intéressants qu'un contrôleur de domaine.
+Le contrôleur voit les authentifications du domaine, le poste voit l'exécution.
+
+### 8.3 Ligne de commande dans les créations de processus
+
+L'événement de création de processus n'indique par défaut que le programme
+lancé, sans ses arguments. Sans eux, on constate qu'un interpréteur a démarré
+sans savoir ce qu'il exécute. L'inclusion de la ligne de commande s'active par
+un réglage distinct, sous les modèles d'administration.
+
+**Contrepartie assumée** : tout secret passé en argument se retrouve en clair
+dans le journal, donc dans le SIEM, lisible par quiconque y accède. Constaté
+directement sur cette maquette lors d'un test employant une commande de création
+de compte local.
+
+> La valeur de détection et l'exposition de secrets sont deux faces du même
+> réglage. Le choix se documente, et s'accompagne d'une règle de gestion sur les
+> commandes qui acceptent un secret en argument.
+
+L'événement porte également l'identifiant du processus créateur, ce qui permet
+de reconstituer la filiation. Ce n'est pas le programme qui est suspect, c'est
+sa filiation : un interpréteur lancé par un traitement de texte n'a pas la même
+signification que lancé par un administrateur.
+
+### 8.4 Vérification
+
+`auditpol /get` interroge la configuration effective de la machine, et non la
+stratégie. C'est ce qui fait foi.
+
+Détail de lecture : l'outil écrit « Réussite » pour un audit en succès seul et
+« Succès et échec » lorsque les deux sont actifs. Un filtre textuel sur un seul
+libellé donne une vue incomplète sans avertissement.
+
+### 8.5 Identifiants d'événements à connaître
 
 | Identifiant | Signification |
 |---|---|
@@ -337,17 +402,82 @@ activé coûte du volume et des performances : on active ce qu'on sait exploiter
 | 4724 | Réinitialisation de mot de passe |
 | 4740 | Verrouillage de compte |
 | 4625 | Échec d'ouverture de session |
+| 4624 | Ouverture de session réussie |
+| 4662 | Opération sur un objet de l'annuaire |
+| 4688 | Création d'un processus |
 
 **La portée du groupe détermine l'identifiant.** Une règle ne couvrant que 4728
 manque toutes les modifications de groupes de domaine local, ce qui inclut les
-groupes d'accès du modèle AGDLP. Beaucoup de règles publiées ne couvrent qu'un
-des trois identifiants.
+groupes d'accès du modèle AGDLP.
 
 ---
 
-## 8. Champs exploitables d'un événement Windows
+## 9. Détection de la lecture d'un secret machine
 
-Exemple d'une modification de groupe :
+### Nature de l'événement
+
+Il n'existe pas d'événement propre à LAPS. Une lecture de mot de passe est une
+lecture d'attribut sur un objet ordinateur, donc un accès au service d'annuaire,
+événement 4662.
+
+Version en place : Windows LAPS avec attributs chiffrés, identifiée par le
+schéma de l'annuaire. Attributs surveillés : `ms-LAPS-Password` et
+`ms-LAPS-EncryptedPassword`.
+
+### Deux niveaux indépendants
+
+> **L'audit d'accès à l'annuaire fonctionne à deux niveaux.** La sous-catégorie
+> autorise la journalisation, la liste d'audit de l'objet la déclenche. Activer
+> la première seule produit un coût en volume sans aucune couverture.
+
+C'est une variante du composant actif qui ne fait rien, appliquée à un mécanisme
+d'audit.
+
+### Entrées d'audit posées
+
+Sur l'unité d'organisation des postes, héritées aux objets ordinateurs :
+
+| Paramètre | Valeur | Raison |
+|---|---|---|
+| Principal | Tout le monde | On veut savoir qui lit, administrateurs compris |
+| Type | Réussite | L'échec produit du bruit sur les accès normaux |
+| Droit | Lecture de propriété | C'est la lecture qu'on détecte |
+| Portée | Objets Ordinateur descendants | Évite les objets utilisateurs et groupes |
+| Attributs | Les deux attributs LAPS uniquement | Sans restriction, tout accès à tout attribut serait audité |
+
+La restriction aux attributs détermine le volume. C'est le traitement concret de
+l'arbitrage laissé ouvert sur l'accès au service d'annuaire.
+
+L'héritage se vérifie sur l'objet ordinateur lui-même : une entrée posée sur
+l'unité ne garantit pas son application.
+
+### Ce que la détection voit
+
+| Cas | Déchiffrement | Événement produit |
+|---|---|---|
+| Compte hors du groupe autorisé | Refusé | Oui |
+| Compte autorisé | Réussi | Oui |
+
+> **La lecture de l'attribut et son déchiffrement sont deux opérations
+> distinctes.** L'audit journalise la première, indépendamment du succès de la
+> seconde. Une détection fondée sur cet événement voit donc la tentative, y
+> compris lorsqu'elle n'aboutit pas.
+
+C'est le cas qui compte : un attaquant sans droit de déchiffrement produit
+exactement la même trace qu'un administrateur autorisé.
+
+### Limites connues
+
+Le nom de l'objet cible apparaît sous forme d'identifiant global et non sous le
+nom de la machine. La description d'une règle ne pourra pas nommer la machine
+directement.
+
+Aucune règle livrée ne couvre l'événement 4662. La détection doit être écrite
+entièrement, avec une condition portant sur l'identifiant de l'attribut lu.
+
+---
+
+## 10. Champs exploitables d'un événement Windows
 
 | Champ | Contenu |
 |---|---|
@@ -355,6 +485,7 @@ Exemple d'une modification de groupe :
 | `subjectLogonId` | Session de connexion de l'auteur |
 | `memberName`, `memberSid` | Objet ajouté ou retiré |
 | `targetUserName`, `targetSid` | Groupe concerné |
+| `commandLine`, `parentProcessName` | Exécution et filiation, événement 4688 |
 
 **Le `subjectLogonId` est le champ le plus utile en investigation.** Il
 identifie une session précise et permet de reconstituer l'ensemble des actions
@@ -366,7 +497,7 @@ surveillance particulière, et celle de l'existence de LAPS.
 
 ---
 
-## 9. Qualification d'une alerte
+## 11. Qualification d'une alerte
 
 Cinq questions, dans cet ordre :
 
@@ -377,18 +508,9 @@ Cinq questions, dans cet ordre :
 5. **Est-ce cohérent ?** Confrontation au fonctionnement normal connu
 
 **La cinquième question est celle qui décide, et elle exige la connaissance de
-l'infrastructure.** Une même trace technique peut correspondre à une activité
-légitime ou à une intrusion : seul le contexte tranche.
-
-C'est pourquoi un SOC investit autant dans la documentation de l'environnement
-supervisé que dans l'outil lui-même.
+l'infrastructure.**
 
 ### Faux positif et cause du faux positif
-
-Une alerte qualifiée en faux positif doit déclencher une seconde question :
-pourquoi la règle s'est-elle trompée, et que faut-il changer ?
-
-Trois réponses possibles, hiérarchisées :
 
 | Réponse | Effet |
 |---|---|
@@ -397,12 +519,11 @@ Trois réponses possibles, hiérarchisées :
 | Exclure | Masque le symptôme et crée un angle mort |
 
 **Lorsqu'un faux positif provient d'une faiblesse de l'environnement, corriger
-l'environnement plutôt que la règle.** Sinon, les exclusions s'accumulent et
-masquent des défauts réels.
+l'environnement plutôt que la règle.**
 
 ---
 
-## 10. Exclusions
+## 12. Exclusions
 
 | Exclusion | Portée | Motif | Date |
 |---|---|---|---|
@@ -412,18 +533,15 @@ masquent des défauts réels.
 était compromis, plus rien venant de lui ne serait détecté.
 
 Règle de gestion : toute exclusion se documente avec sa justification et sa
-date, et se révise périodiquement. Les SIEM en exploitation accumulent des
-exclusions posées par des personnes parties depuis, dont plus personne ne
-connaît la raison. C'est un angle mort majeur et rarement audité.
+date, et se révise périodiquement.
 
-Effet de bord constaté en session 10 : une tentative depuis le poste
-d'administration produit bien une détection, visible dans l'alerte
-`Action détectée (Found)`, mais aucune action de bannissement. La détection
-subsiste, la réponse est suspendue.
+Effet de bord constaté : une tentative depuis le poste d'administration produit
+bien une détection, mais aucune action de bannissement. La détection subsiste,
+la réponse est suspendue.
 
 ---
 
-## 11. Méthode d'investigation et de vérification
+## 13. Méthode d'investigation et de vérification
 
 ### La donnée témoin
 
@@ -431,17 +549,48 @@ Une recherche qui ne retourne rien ne prouve pas l'absence de données : elle
 prouve que cette recherche-là ne les trouve pas.
 
 **Méthode** : injecter un événement au contenu connu et unique, puis le
-rechercher. C'est le seul test qui distingue « les données ne sont pas là » de
-« je cherche mal ».
+rechercher.
 
-**Condition de validité** : le témoin doit déclencher une règle connue. Sur un
-dispositif qui n'indexe que ce qui correspond, un témoin arbitraire ne distingue
-pas l'absence de collecte de l'absence de règle. Un témoin injecté par `logger`
-avec une chaîne quelconque ne produit aucun document, sans que cela révèle quoi
-que ce soit sur l'état de la chaîne.
+Trois conditions de validité, chacune apprise par un témoin invalide :
 
-Témoin retenu pour cette infrastructure : une tentative d'authentification SSH
-avec un nom d'utilisateur unique et inexistant, qui déclenche une règle native.
+1. **Le témoin doit déclencher une règle connue.** Sur un dispositif qui
+   n'indexe que ce qui correspond, un témoin arbitraire ne distingue pas
+   l'absence de collecte de l'absence de règle.
+2. **Le témoin doit emprunter le chemin testé.** Un test de connectivité lancé
+   depuis la machine cible ne traverse pas le pare-feu.
+3. **Le marqueur ne doit pas pouvoir apparaître ailleurs.** Ni identifiant de
+   règle, ni numéro de port, ni valeur numérique.
+
+### Recherches et correspondances fortuites
+
+> **Ne jamais rechercher un identifiant ou une valeur numérique par
+> correspondance de texte libre dans un fichier d'alertes.** Rechercher sur le
+> champ.
+
+Deux causes de correspondance fortuite, également trompeuses :
+
+- Les identifiants internes contiennent des séquences numériques arbitraires.
+  Un identifiant d'alerte peut contenir le numéro d'événement recherché.
+- Les commandes d'administration sont journalisées avec leurs arguments. Une
+  recherche pour un identifiant retourne la commande de recherche elle-même, et
+  le compteur augmente à chaque tentative, ce qui ressemble exactement à un flux
+  en temps réel.
+
+Corollaire technique : au delà d'une certaine taille, l'outil de recherche
+traite le fichier d'alertes comme binaire et cesse d'afficher les
+correspondances. Les comptages obtenus sans l'option adéquate sont faux sans
+message d'erreur.
+
+### Latence de chaîne
+
+Entre l'événement source et sa disponibilité en recherche, il y a la collecte,
+l'analyse, l'écriture fichier, la lecture par l'expéditeur et l'indexation. Un
+comptage lancé immédiatement après l'injection d'un témoin retourne zéro sans
+que cela signifie quoi que ce soit.
+
+Un redémarrage du gestionnaire coupe les agents une dizaine de secondes. Un test
+lancé dans cette fenêtre donne un résultat vide pour une raison sans rapport
+avec ce qui est testé.
 
 ### Vérification d'une chaîne de bout en bout
 
@@ -450,30 +599,16 @@ avec un nom d'utilisateur unique et inexistant, qui déclenche une règle native
 | Émission | La source écrit | Descripteur de fichier ouvert en écriture |
 | Collecte | L'agent lit | Descripteur de fichier ouvert en lecture |
 | Transport | L'agent est connecté | Liste des agents côté gestionnaire |
+| Réception syslog | Le service écoute | Socket ouverte, puis capture réseau |
 | Décodage et règle | Correspondance | Outil de test de journaux, phases 1 à 3 |
-| Indexation | Document écrit | Comptage sur l'index avec le témoin |
-
-Le test de journaux seul ne couvre que le quatrième étage.
+| Analyse en production | Alerte produite | Présence dans le fichier d'alertes |
+| Indexation | Document écrit | Comptage sur l'index, sur un champ |
 
 ### Croiser les critères
 
 Chercher par un champ que tous les événements ne portent pas donne un résultat
-incomplet, sans avertissement.
-
-Croiser au moins deux critères indépendants et comparer les volumes : par
-adresse source, par agent et groupe de règles, puis dans le texte brut. Une
-divergence révèle un champ manquant.
-
-### Référentiel de temps
-
-Le journal brut issu de journald est exprimé en temps universel, l'horodatage
-d'indexation en heure locale. Deux heures d'écart sur cette maquette, sans aucun
-défaut de synchronisation.
-
-**Fixer explicitement le référentiel employé avant toute reconstitution de
-chronologie.** Une chronologie mélangeant textes bruts et horodatages indexés
-est fausse sans avertissement. Le point devient déterminant dès que plusieurs
-sources sont corrélées.
+incomplet, sans avertissement. Croiser au moins deux critères indépendants et
+comparer les volumes.
 
 ### Reconstruire une chronologie
 
@@ -483,79 +618,87 @@ qui précède et ce qui suit, et cherche ce que l'alerte n'a pas vu.
 Séquence observée sur la maquette, qui hors contexte constituerait une
 compromission caractérisée : reconnaissance, pause, reprise massive, détection
 de force brute, puis authentification réussie soixante-quatre secondes plus
-tard.
-
-Trois éléments plaidaient pour le faux positif, et aucun n'est accessible sans
-un journal riche :
-
-- Le mode d'authentification de la connexion réussie était incohérent avec le
-  scénario d'attaque
-- Le compte ayant réussi ne figurait pas parmi ceux qui avaient été testés
-- L'empreinte de la clé employée correspondait à une clé connue
+tard. Trois éléments plaidaient pour le faux positif, aucun accessible sans un
+journal riche.
 
 C'est la raison pour laquelle le journal brut est conservé en plus des champs
 décodés.
 
 ---
 
-## 12. Plan de collecte par itération
+## 14. Plan de collecte par itération
 
 Les sources ne se déterminent pas intégralement au départ. On en branche
-quelques-unes, on investigue, on constate un manque, on l'ajoute. Chaque
-investigation améliore la collecte pour la suivante.
+quelques-unes, on investigue, on constate un manque, on l'ajoute.
 
-C'est l'inverse d'une approche exhaustive initiale, qui produit un volume
-ingérable dont personne ne sait ce qui sert.
-
-**Manque constaté par ce mécanisme** : les actions de `fail2ban` n'étaient pas
-collectées. Les actions défensives automatiques sont souvent les moins bien
-couvertes, parce qu'on pense à collecter les attaques et non les réponses. Or
-savoir qu'une contre-mesure s'est déclenchée change la qualification d'un
-incident.
+**Manque constaté par ce mécanisme** : les actions du service de blocage
+automatique n'étaient pas collectées. Les actions défensives automatiques sont
+souvent les moins bien couvertes, parce qu'on pense à collecter les attaques et
+non les réponses.
 
 ---
 
-## 13. Éléments de dimensionnement
+## 15. Éléments de dimensionnement
 
-Relevé au 17 septembre 2026, à considérer comme un ordre de grandeur et non
-comme un régime de croisière : l'index courant contient les exercices de
-détection des sessions 9 et 10.
+Relevé au 17 septembre 2026, ordre de grandeur et non régime de croisière :
+l'index courant contient les exercices de détection des sessions 9 à 11.
 
 | Élément | Valeur |
 |---|---|
 | Espace alloué à `/var` | 41 Go, dont 26 disponibles |
-| Index d'alertes du jour | 2493 documents, 9,6 Mo |
-| Journal d'alertes en fichier | 1,1 Mo |
-| Archives brutes | Désactivées, `logall` et `logall_json` à `no` |
+| Index d'alertes, deux jours | environ 3300 documents |
+| Archives brutes | Désactivées |
 | Mémoire de la machine | 7,7 Go, dont 1,6 pour l'indexeur et 1,7 pour le gestionnaire |
 
-**Facteur d'amplification.** Une tentative d'authentification SSH sur un compte
-inexistant produit deux alertes, le serveur SSH émettant deux lignes distinctes
-qui correspondent toutes deux à la même règle. Un dimensionnement établi en
-comptant les événements, et non les alertes, sous-estime le stockage.
+### Composition par type d'événement
+
+| Identifiant | Part | Nature |
+|---|---|---|
+| 4624 | 524 | Ouvertures de session |
+| 4688 | 249 | Créations de processus, depuis le raccordement des postes |
+| 4769 | 19 | Opérations de tickets Kerberos |
+| Autres | moins de 60 | Événements applicatifs et système |
+
+Deux identifiants représentent plus de quatre-vingt-dix pour cent des alertes.
+Toute politique de rétention se dimensionne à partir de ces deux familles.
+
+### Facteurs d'amplification
+
+| Événement | Alertes produites |
+|---|---|
+| Tentative d'authentification SSH sur compte inexistant | 2 |
+| Connexion TCP refusée par le pare-feu | 5, une par retransmission |
+
+Un dimensionnement établi en comptant les événements, et non les alertes,
+sous-estime le stockage.
 
 ---
 
-## 14. Points ouverts
+## 16. Points ouverts
 
-`PC01` et `FW01` ne sont pas encore raccordés comme sources. Le raccordement de
-`PC01` suppose au préalable d'étendre la stratégie d'audit à l'unité
-d'organisation des postes.
+Les événements de filtrage de `FW01` sont reçus et décodables mais ne produisent
+aucune alerte en production. Le même événement produit une alerte de niveau 5 en
+test hors ligne.
 
-Les détections 2, 3 et 4 du plan ne sont pas implémentées.
+Aucune règle ne couvre l'événement 4662. La détection 3 est préparée côté
+annuaire mais n'a pas de règle. Une règle d'observation temporaire est en place
+et doit être retirée.
 
-La rétention des index n'est pas configurée. Une politique de purge sera
-nécessaire pour éviter la saturation du volume d'indexation. L'arbitrage sur
-l'activation des archives brutes lui est lié : elles combleraient l'angle mort
-décrit en section 4, au prix d'un volume à borner.
+Les détections 2 et 4 du plan ne sont pas implémentées.
 
-Un bloc de collecte déclaré sur `SIEM01` pointe vers un fichier `fail2ban`
-inexistant sur cette machine, et produit une erreur de lecture à chaque
-démarrage. Son retrait est engagé, à confirmer par l'absence de l'erreur après
-redémarrage.
+La rétention des index n'est pas configurée. L'arbitrage sur l'activation des
+archives brutes lui est lié : elles combleraient l'angle mort décrit en
+section 5, au prix d'un volume à borner.
+
+Les réglages d'audit des contrôleurs de domaine sont portés par la stratégie par
+défaut du domaine et s'appliquent donc aussi aux postes.
+
+`SIEM01` ne dispose pas de pare-feu local, contrairement à `SRV01`. Une machine
+qui reçoit du syslog sans filtrage local est un écart de durcissement.
 
 Le niveau de la règle native sur les connexions par compte au nom générique
 produit un faux positif dont la cause est un nom de compte non nominatif. La
 correction attendue est le renommage du compte, non l'ajustement de la règle.
 
-Les horloges de `DC01` et de `FW01` n'ont pas été vérifiées.
+La création d'un compte local sur un poste ne produit pas d'alerte de niveau
+comparable à sa suppression. Candidat à une règle locale.
